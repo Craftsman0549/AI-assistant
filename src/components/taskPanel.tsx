@@ -1,3 +1,4 @@
+/* eslint-disable prettier/prettier */
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type {
   TaskWithMeta as Task,
@@ -7,6 +8,8 @@ import type {
 import settingsStore from '@/features/stores/settings'
 import { speakMessageHandler } from '@/features/chat/handlers'
 import TaskEditModal from '@/components/taskEditModal'
+import ReviewModal from '@/components/reviewModal'
+import { createBrowserSupabase } from '@/lib/supabaseClient'
 
 type CreateForm = {
   title: string
@@ -27,22 +30,37 @@ export const TaskPanel: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [form, setForm] = useState<CreateForm>(defaultForm)
-  const [filter, setFilter] = useState<TaskStatus | 'all'>('all')
   const [q, setQ] = useState('')
+  const [statusFilter, setStatusFilter] = useState<Record<TaskStatus, boolean>>({
+    todo: true,
+    in_progress: true,
+    done: false,
+    canceled: true,
+  })
+  const [filterOpen, setFilterOpen] = useState(false)
+  const filterRef = useRef<HTMLDivElement | null>(null)
   const [editTask, setEditTask] = useState<Task | null>(null)
   const clientId = settingsStore((s) => s.clientId)
   const messageReceiverEnabled = settingsStore((s) => s.messageReceiverEnabled)
   const nudgeTimerRef = useRef<number | null>(null)
   const NUDGE_MINUTES = 15
+  const [reviewOpen, setReviewOpen] = useState(false)
 
-  const filtered = useMemo(() => tasks, [tasks])
+  const filtered = useMemo(
+    () => tasks.filter((t) => statusFilter[t.status as TaskStatus] !== false),
+    [tasks, statusFilter]
+  )
+  const allSelected =
+    statusFilter.todo &&
+    statusFilter.in_progress &&
+    statusFilter.done &&
+    statusFilter.canceled
 
   const fetchTasks = async () => {
     setLoading(true)
     setError(null)
     try {
       const params = new URLSearchParams()
-      if (filter !== 'all') params.set('status', filter)
       if (q.trim()) params.set('q', q.trim())
       const res = await fetch(`/api/tasks?${params.toString()}`)
       const data = await res.json()
@@ -62,15 +80,141 @@ export const TaskPanel: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Supabase Realtime: 変更を即時反映
+  useEffect(() => {
+    const sb = createBrowserSupabase()
+    if (!sb) return
+
+    // ローカル差分更新用にMapを保持
+    const mapRef = { current: new Map<string, Task>() }
+    // 初回同期
+    ;(async () => {
+      try {
+        await fetchTasks()
+        // fetch後のtasksからMapを作成
+        const m = new Map<string, Task>()
+        tasks.forEach((t) => m.set(t.id, t))
+        mapRef.current = m
+      } catch {}
+    })()
+
+    const applyTaskUpsert = (rec: any) => {
+      if (!rec?.id) return
+      const prev = mapRef.current.get(rec.id)
+      const patched: Task = {
+        id: rec.id,
+        title: rec.title ?? prev?.title ?? '',
+        note: rec.note ?? prev?.note,
+        status: (rec.status ?? prev?.status ?? 'todo') as TaskStatus,
+        priority: (rec.priority ?? prev?.priority ?? 'normal') as TaskPriority,
+        due: rec.due ?? prev?.due,
+        createdAt: rec.createdAt ?? prev?.createdAt ?? new Date().toISOString(),
+        updatedAt: rec.updatedAt ?? new Date().toISOString(),
+        // metaは既存値を尊重（精確な更新はwork_sessionsイベントや定期fetchで補正）
+        isActive: prev?.isActive ?? false,
+        totalSeconds: prev?.totalSeconds ?? 0,
+      }
+      mapRef.current.set(patched.id, patched)
+      // 表示フィルタ考慮のため配列再構築
+      setTasks(Array.from(mapRef.current.values()))
+    }
+
+    const applyTaskDelete = (rec: any) => {
+      if (!rec?.id) return
+      if (mapRef.current.has(rec.id)) {
+        mapRef.current.delete(rec.id)
+        setTasks(Array.from(mapRef.current.values()))
+      }
+    }
+
+    let tasksChannel: any
+    let wsChannel: any
+    let unsubscribed = false
+
+    const subscribe = () => {
+      if (unsubscribed) return
+      tasksChannel = sb
+        .channel('realtime-tasks')
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'tasks' }, (payload: any) => {
+          applyTaskUpsert(payload.new)
+        })
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'tasks' }, (payload: any) => {
+          applyTaskUpsert(payload.new)
+        })
+        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'tasks' }, (payload: any) => {
+          applyTaskDelete(payload.old)
+        })
+        .subscribe()
+
+      // work_sessionsの変化はメタ（totalSeconds/isActive）に影響→全量再取得
+      wsChannel = sb
+        .channel('realtime-work-sessions')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'work_sessions' }, async () => {
+          await fetchTasks()
+          // 最新配列からMapを再構築
+          const m = new Map<string, Task>()
+          tasks.forEach((t) => m.set(t.id, t))
+          mapRef.current = m
+        })
+        .subscribe()
+    }
+
+    const unsubscribe = () => {
+      try { tasksChannel && sb.removeChannel(tasksChannel) } catch {}
+      try { wsChannel && sb.removeChannel(wsChannel) } catch {}
+    }
+
+    subscribe()
+
+    // タブ非表示時は購読停止、復帰時に再購読＋同期
+    const onVisibility = async () => {
+      if (document.hidden) {
+        unsubscribe()
+      } else {
+        subscribe()
+        await fetchTasks()
+        const m = new Map<string, Task>()
+        tasks.forEach((t) => m.set(t.id, t))
+        mapRef.current = m
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+
+    return () => {
+      unsubscribed = true
+      document.removeEventListener('visibilitychange', onVisibility)
+      unsubscribe()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    const onDocClick = (e: MouseEvent) => {
+      if (!filterRef.current) return
+      if (!filterRef.current.contains(e.target as Node)) setFilterOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [])
+
   const onCreate = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!form.title.trim()) return
     setLoading(true)
     setError(null)
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      try {
+        const sbc = createBrowserSupabase()
+        if (sbc) {
+          const { data } = await sbc.auth.getSession()
+          const token = data.session?.access_token
+          if (token) headers['Authorization'] = `Bearer ${token}`
+        }
+      } catch {}
       const res = await fetch('/api/tasks', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           title: form.title.trim(),
           note: form.note.trim() || undefined,
@@ -91,7 +235,16 @@ export const TaskPanel: React.FC = () => {
 
   const onComplete = async (id: string) => {
     try {
-      const res = await fetch(`/api/tasks/${id}/complete`, { method: 'POST' })
+      const headers: Record<string, string> = {}
+      try {
+        const sbc = createBrowserSupabase()
+        if (sbc) {
+          const { data } = await sbc.auth.getSession()
+          const token = data.session?.access_token
+          if (token) headers['Authorization'] = `Bearer ${token}`
+        }
+      } catch {}
+      const res = await fetch(`/api/tasks/${id}/complete`, { method: 'POST', headers })
       if (!res.ok) {
         const data = await res.json()
         throw new Error(data?.error || '更新に失敗しました')
@@ -115,7 +268,16 @@ export const TaskPanel: React.FC = () => {
 
   const onStart = async (id: string) => {
     try {
-      const res = await fetch(`/api/tasks/${id}/start`, { method: 'POST' })
+      const headers: Record<string, string> = {}
+      try {
+        const sbc = createBrowserSupabase()
+        if (sbc) {
+          const { data } = await sbc.auth.getSession()
+          const token = data.session?.access_token
+          if (token) headers['Authorization'] = `Bearer ${token}`
+        }
+      } catch {}
+      const res = await fetch(`/api/tasks/${id}/start`, { method: 'POST', headers })
       if (!res.ok) {
         const data = await res.json()
         throw new Error(data?.error || '開始に失敗しました')
@@ -152,7 +314,16 @@ export const TaskPanel: React.FC = () => {
 
   const onStop = async (id: string) => {
     try {
-      const res = await fetch(`/api/tasks/${id}/stop`, { method: 'POST' })
+      const headers: Record<string, string> = {}
+      try {
+        const sbc = createBrowserSupabase()
+        if (sbc) {
+          const { data } = await sbc.auth.getSession()
+          const token = data.session?.access_token
+          if (token) headers['Authorization'] = `Bearer ${token}`
+        }
+      } catch {}
+      const res = await fetch(`/api/tasks/${id}/stop`, { method: 'POST', headers })
       if (!res.ok) {
         const data = await res.json()
         throw new Error(data?.error || '停止に失敗しました')
@@ -211,7 +382,16 @@ export const TaskPanel: React.FC = () => {
 
   const onDelete = async (id: string) => {
     try {
-      const res = await fetch(`/api/tasks/${id}`, { method: 'DELETE' })
+      const headers: Record<string, string> = {}
+      try {
+        const sbc = createBrowserSupabase()
+        if (sbc) {
+          const { data } = await sbc.auth.getSession()
+          const token = data.session?.access_token
+          if (token) headers['Authorization'] = `Bearer ${token}`
+        }
+      } catch {}
+      const res = await fetch(`/api/tasks/${id}`, { method: 'DELETE', headers })
       if (!res.ok && res.status !== 204) {
         const data = await res.json()
         throw new Error(data?.error || '削除に失敗しました')
@@ -224,7 +404,10 @@ export const TaskPanel: React.FC = () => {
 
   return (
     <div className="fixed right-6 bottom-32 md:bottom-28 z-[55] w-[420px] max-w-[90vw] bg-white/80 backdrop-blur rounded-lg shadow-lg border border-gray-200 p-4 text-gray-800">
-      <h2 className="font-semibold text-lg mb-2">タスク</h2>
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="font-semibold text-lg">タスク</h2>
+        <button className="px-2 py-1 text-sm rounded border hover:bg-gray-50" onClick={() => setReviewOpen(true)}>振り返り</button>
+      </div>
       <form onSubmit={onCreate} className="space-y-2 mb-3">
         <input
           className="w-full rounded border px-2 py-1"
@@ -272,29 +455,88 @@ export const TaskPanel: React.FC = () => {
       </form>
 
       <div className="flex gap-2 items-center mb-2">
-        <select
-          className="rounded border px-2 py-1"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value as any)}
-        >
-          <option value="all">すべて</option>
-          <option value="todo">未着手</option>
-          <option value="in_progress">進行中</option>
-          <option value="done">完了</option>
-          <option value="canceled">中止</option>
-        </select>
-        <input
-          className="flex-1 rounded border px-2 py-1"
-          placeholder="検索（タイトル/備考）"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
-        <button
-          className="rounded border px-3 py-1 hover:bg-gray-100"
-          onClick={() => fetchTasks()}
-        >
-          更新
-        </button>
+        <div className="relative" ref={filterRef}>
+          <button
+            className="rounded border px-2 py-1 text-sm hover:bg-gray-50"
+            onClick={() => setFilterOpen((v) => !v)}
+            aria-haspopup="menu"
+            aria-expanded={filterOpen}
+          >
+            フィルタ
+          </button>
+          {filterOpen && (
+            <div className="absolute right-0 mt-1 w-56 bg-white border rounded shadow-lg z-[60] p-2">
+              <div className="text-xs text-gray-600 px-1 pb-1">ステータス</div>
+              <label className="flex items-center gap-2 text-sm px-1 py-1">
+                <input
+                  type="checkbox"
+                  checked={statusFilter.todo}
+                  onChange={(e) => setStatusFilter((s) => ({ ...s, todo: e.target.checked }))}
+                />
+                未着手
+              </label>
+              <label className="flex items-center gap-2 text-sm px-1 py-1">
+                <input
+                  type="checkbox"
+                  checked={statusFilter.in_progress}
+                  onChange={(e) => setStatusFilter((s) => ({ ...s, in_progress: e.target.checked }))}
+                />
+                進行中
+              </label>
+              <label className="flex items-center gap-2 text-sm px-1 py-1">
+                <input
+                  type="checkbox"
+                  checked={statusFilter.done}
+                  onChange={(e) => setStatusFilter((s) => ({ ...s, done: e.target.checked }))}
+                />
+                完了
+              </label>
+              <label className="flex items-center gap-2 text-sm px-1 py-1">
+                <input
+                  type="checkbox"
+                  checked={statusFilter.canceled}
+                  onChange={(e) => setStatusFilter((s) => ({ ...s, canceled: e.target.checked }))}
+                />
+                中止
+              </label>
+              <div className="h-px bg-gray-200 my-2" />
+              <div className="flex gap-2">
+                <button
+                  className="rounded border px-2 py-1 text-xs hover:bg-gray-100"
+                  onClick={() =>
+                    setStatusFilter(
+                      allSelected
+                        ? { todo: false, in_progress: false, done: false, canceled: false }
+                        : { todo: true, in_progress: true, done: true, canceled: true }
+                    )
+                  }
+                >
+                  {allSelected ? '全解除' : '全選択'}
+                </button>
+                <button
+                  className="rounded border px-2 py-1 text-xs hover:bg-gray-100"
+                  onClick={() => setStatusFilter({ todo: true, in_progress: true, done: false, canceled: true })}
+                >
+                  未完了のみ
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="flex gap-2 items-center flex-1">
+          <input
+            className="flex-1 rounded border px-2 py-1"
+            placeholder="検索（タイトル/備考）"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <button
+            className="rounded border px-3 py-1 hover:bg-gray-100"
+            onClick={() => fetchTasks()}
+          >
+            更新
+          </button>
+        </div>
       </div>
 
       {error && <div className="text-red-600 text-sm mb-2">{error}</div>}
@@ -387,6 +629,7 @@ export const TaskPanel: React.FC = () => {
           await fetchTasks()
         }}
       />
+      <ReviewModal open={reviewOpen} onClose={() => setReviewOpen(false)} />
     </div>
   )
 }

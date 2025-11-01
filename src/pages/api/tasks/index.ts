@@ -1,15 +1,19 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { tasksRepo } from '@/lib/tasksRepo'
+import { tasksService } from '@/lib/tasksService'
+import { createServerSupabaseWithToken } from '@/lib/supabaseClient'
 import type { CreateTaskInput, TaskWithMeta, Task } from '@/types/task'
 
-export default function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
+    const authHeader = req.headers.authorization || ''
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : undefined
+    const sb = createServerSupabaseWithToken(token)
     if (req.method === 'GET') {
       const { status, q } = req.query
-      const data = tasksRepo.listWithMeta({
+      const data = await tasksService.listWithMeta({
         status: typeof status === 'string' ? (status as any) : undefined,
         q: typeof q === 'string' ? q : undefined,
-      })
+      }, sb)
       res.status(200).json({ tasks: data as TaskWithMeta[] })
       return
     }
@@ -20,12 +24,12 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         res.status(400).json({ error: 'title is required' })
         return
       }
-      const created: Task = tasksRepo.create({
+      const created: Task = await tasksService.create({
         title: body.title,
         note: body.note,
         due: body.due,
         priority: body.priority,
-      })
+      }, sb)
       res.status(201).json({ task: created })
       return
     }

@@ -1,3 +1,4 @@
+/* eslint-disable prettier/prettier */
 import Database from 'better-sqlite3'
 import fs from 'fs'
 import path from 'path'
@@ -231,5 +232,72 @@ export const tasksRepo = {
       isActive: active ? active.taskId === t.id : false,
       totalSeconds: this.getTaskTotalSeconds(t.id),
     }))
+  },
+
+  // --- Summary helpers ---
+  listSessionsInRange(fromISO: string, toISO: string): Array<{
+    id: string
+    taskId: string
+    startAt: string
+    endAt?: string
+  }> {
+    const stmt = db.prepare(
+      'SELECT id, taskId, startAt, endAt FROM work_sessions WHERE startAt < @to AND COALESCE(endAt, @to) > @from'
+    )
+    return stmt.all({ from: fromISO, to: toISO }) as any
+  },
+
+  getSummary(fromISO: string, toISO: string) {
+    const sessions = this.listSessionsInRange(fromISO, toISO)
+    const now = Date.now()
+    const byTask: Record<string, { totalSeconds: number; sessionCount: number; lastWorkedAt: string }> = {}
+    let totalSeconds = 0
+    for (const s of sessions) {
+      const start = Math.max(new Date(s.startAt).getTime(), new Date(fromISO).getTime())
+      const rawEnd = s.endAt ? new Date(s.endAt).getTime() : now
+      const end = Math.min(rawEnd, new Date(toISO).getTime())
+      const sec = end > start ? Math.floor((end - start) / 1000) : 0
+      totalSeconds += sec
+      if (!byTask[s.taskId]) byTask[s.taskId] = { totalSeconds: 0, sessionCount: 0, lastWorkedAt: s.endAt || new Date().toISOString() }
+      byTask[s.taskId].totalSeconds += sec
+      byTask[s.taskId].sessionCount += 1
+      const latest = byTask[s.taskId].lastWorkedAt
+      if (new Date(s.endAt || s.startAt).getTime() > new Date(latest).getTime()) {
+        byTask[s.taskId].lastWorkedAt = s.endAt || s.startAt
+      }
+    }
+    // attach titles
+    const tasks = this.list()
+    const byTaskArray = Object.entries(byTask).map(([taskId, v]) => {
+      const t = tasks.find((x) => x.id === taskId)
+      return { id: taskId, title: t?.title || '(削除済みタスク)', totalSeconds: v.totalSeconds, sessionCount: v.sessionCount, lastWorkedAt: v.lastWorkedAt }
+    })
+    byTaskArray.sort((a, b) => b.totalSeconds - a.totalSeconds)
+
+    // completed count (done updated within range)
+    const stmtDone = db.prepare("SELECT COUNT(1) as c FROM tasks WHERE status = 'done' AND updatedAt >= ? AND updatedAt < ?")
+    const row: any = stmtDone.get(fromISO, toISO)
+    const completedCount = Number(row?.c || 0)
+
+    // days breakdown (local days)
+    const from = new Date(fromISO)
+    const to = new Date(toISO)
+    const dayStart = new Date(from)
+    dayStart.setHours(0, 0, 0, 0)
+    const days: Array<{ date: string; seconds: number }> = []
+    for (let d = new Date(dayStart); d < to; d.setDate(d.getDate() + 1)) {
+      const start = new Date(d)
+      const end = new Date(d)
+      end.setDate(end.getDate() + 1)
+      let secSum = 0
+      for (const s of sessions) {
+        const sStart = Math.max(new Date(s.startAt).getTime(), start.getTime())
+        const sEnd = Math.min((s.endAt ? new Date(s.endAt).getTime() : now), end.getTime())
+        if (sEnd > sStart) secSum += Math.floor((sEnd - sStart) / 1000)
+      }
+      days.push({ date: new Date(start).toISOString(), seconds: secSum })
+    }
+
+    return { totalSeconds, byTask: byTaskArray, completedCount, days }
   },
 }

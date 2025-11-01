@@ -1,3 +1,4 @@
+/* eslint-disable prettier/prettier */
 import React, { useEffect, useState } from 'react'
 import type { TaskWithMeta as Task, TaskPriority } from '@/types/task'
 

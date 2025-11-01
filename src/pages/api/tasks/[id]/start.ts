@@ -1,7 +1,8 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { tasksRepo } from '@/lib/tasksRepo'
+import { tasksService } from '@/lib/tasksService'
+import { createServerSupabaseWithToken } from '@/lib/supabaseClient'
 
-export default function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
     const { id } = req.query
     if (typeof id !== 'string') {
@@ -13,7 +14,10 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       res.status(405).end('Method Not Allowed')
       return
     }
-    const session = tasksRepo.startWork(id)
+    const authHeader = req.headers.authorization || ''
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : undefined
+    const sb = createServerSupabaseWithToken(token)
+    const session = await tasksService.startWork(id, sb)
     res.status(200).json({ session })
   } catch (e: any) {
     res.status(500).json({ error: e?.message || 'internal error' })
