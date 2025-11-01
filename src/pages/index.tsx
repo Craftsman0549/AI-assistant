@@ -1,4 +1,5 @@
-import { useEffect } from 'react'
+/* eslint-disable prettier/prettier */
+import { useEffect, useState } from 'react' 
 import { useTranslation } from 'react-i18next'
 import { Form } from '@/components/form'
 import MessageReceiver from '@/components/messageReceiver'
@@ -18,6 +19,8 @@ import '@/lib/i18n'
 import { buildUrl } from '@/utils/buildUrl'
 import { YoutubeManager } from '@/components/youtubeManager'
 import toastStore from '@/features/stores/toast'
+import TaskCreateModal from '@/components/taskCreateModal'
+import TaskPanel from '@/components/taskPanel'
 
 const Home = () => {
   const webcamStatus = homeStore((s) => s.webcamStatus)
@@ -33,6 +36,7 @@ const Home = () => {
   const messageReceiverEnabled = settingsStore((s) => s.messageReceiverEnabled)
   const modelType = settingsStore((s) => s.modelType)
   const { t } = useTranslation()
+  const [taskOpen, setTaskOpen] = useState(false)
   const characterPresets = [
     {
       key: 'characterPreset1',
@@ -112,6 +116,14 @@ const Home = () => {
       <YoutubeManager />
       <CharacterPresetMenu />
       <ImageOverlay />
+      <TaskPanel />
+      <button
+        className="fixed right-6 bottom-28 md:bottom-24 z-[60] bg-blue-600 text-white rounded-full px-4 py-2 shadow-xl hover:bg-blue-700"
+        onClick={() => setTaskOpen(true)}
+      >
+        ＋ タスク作成
+      </button>
+      <TaskCreateModal open={taskOpen} onClose={() => setTaskOpen(false)} />
     </div>
   )
 }
