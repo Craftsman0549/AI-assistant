@@ -1,8 +1,11 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { tasksService } from '@/lib/tasksService'
-import { createServerSupabaseWithToken } from '@/lib/supabaseClient'
+import { resolveApiAuth, UnauthorizedError } from '@/lib/apiAuth'
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
   try {
     const { id } = req.query
     if (typeof id !== 'string') {
@@ -15,12 +18,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return
     }
     // 現在は単一アクティブのみのためidは参照のみ
-    const authHeader = req.headers.authorization || ''
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : undefined
-    const sb = createServerSupabaseWithToken(token)
-    const ended = await tasksService.stopWork(sb)
+    const auth = await resolveApiAuth(req)
+    const ended = await tasksService.stopWork(auth)
     res.status(200).json({ session: ended })
   } catch (e: any) {
+    if (e instanceof UnauthorizedError) {
+      res.status(401).json({ error: e.message })
+      return
+    }
     res.status(500).json({ error: e?.message || 'internal error' })
   }
 }

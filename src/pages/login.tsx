@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import React, { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { createBrowserSupabase } from '@/lib/supabaseClient'
 
 const LoginPage: React.FC = () => {
@@ -39,7 +40,10 @@ const LoginPage: React.FC = () => {
     setMessage(null)
     try {
       if (!sb) throw new Error('Supabase client not configured')
-      const { error } = await sb.auth.signInWithPassword({ email: email.trim(), password })
+      const { error } = await sb.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      })
       if (error) throw error
       setMessage('ログインしました。')
       setPassword('')
@@ -57,7 +61,10 @@ const LoginPage: React.FC = () => {
     setMessage(null)
     try {
       if (!sb) throw new Error('Supabase client not configured')
-      const { error } = await sb.auth.signInWithOtp({ email: email.trim(), options: { emailRedirectTo: window.location.origin } })
+      const { error } = await sb.auth.signInWithOtp({
+        email: email.trim(),
+        options: { emailRedirectTo: window.location.origin },
+      })
       if (error) throw error
       setMessage('マジックリンクを送信しました。メールを確認してください。')
     } catch (e: any) {
@@ -90,18 +97,23 @@ const LoginPage: React.FC = () => {
         <h1 className="text-xl font-semibold mb-4">ログイン</h1>
         {userId ? (
           <div className="mb-4 text-sm text-gray-700">
-            現在のユーザーID: <span className="font-mono break-all">{userId}</span>
+            現在のユーザーID:{' '}
+            <span className="font-mono break-all">{userId}</span>
           </div>
         ) : (
           <div className="mb-4 text-sm text-gray-700">未ログイン</div>
         )}
 
         {error && <div className="mb-3 text-sm text-red-600">{error}</div>}
-        {message && <div className="mb-3 text-sm text-green-600">{message}</div>}
+        {message && (
+          <div className="mb-3 text-sm text-green-600">{message}</div>
+        )}
 
         <form onSubmit={onPasswordLogin} className="space-y-3">
           <div>
-            <label className="block text-sm text-gray-700 mb-1">メールアドレス</label>
+            <label className="block text-sm text-gray-700 mb-1">
+              メールアドレス
+            </label>
             <input
               type="email"
               className="w-full rounded border px-3 py-2"
@@ -111,7 +123,9 @@ const LoginPage: React.FC = () => {
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-700 mb-1">パスワード</label>
+            <label className="block text-sm text-gray-700 mb-1">
+              パスワード
+            </label>
             <input
               type="password"
               className="w-full rounded border px-3 py-2"
@@ -139,7 +153,9 @@ const LoginPage: React.FC = () => {
         </div>
 
         <div className="mt-6 flex items-center justify-between">
-          <a href="/" className="text-sm text-blue-600 hover:underline">ホームに戻る</a>
+          <Link href="/" className="text-sm text-blue-600 hover:underline">
+            ホームに戻る
+          </Link>
           <button
             className="rounded border px-3 py-2 hover:bg-gray-50 disabled:opacity-50"
             onClick={onLogout}
@@ -154,4 +170,3 @@ const LoginPage: React.FC = () => {
 }
 
 export default LoginPage
-

@@ -1,8 +1,11 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { tasksService } from '@/lib/tasksService'
-import { createServerSupabaseWithToken } from '@/lib/supabaseClient'
+import { resolveApiAuth, UnauthorizedError } from '@/lib/apiAuth'
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
   try {
     const { id } = req.query
     if (typeof id !== 'string') {
@@ -14,12 +17,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       res.status(405).end('Method Not Allowed')
       return
     }
-    const authHeader = req.headers.authorization || ''
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : undefined
-    const sb = createServerSupabaseWithToken(token)
-    const session = await tasksService.startWork(id, sb)
+    const auth = await resolveApiAuth(req)
+    const session = await tasksService.startWork(id, auth)
     res.status(200).json({ session })
   } catch (e: any) {
+    if (e instanceof UnauthorizedError) {
+      res.status(401).json({ error: e.message })
+      return
+    }
     res.status(500).json({ error: e?.message || 'internal error' })
   }
 }
