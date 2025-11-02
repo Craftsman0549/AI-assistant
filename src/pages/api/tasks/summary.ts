@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { tasksService } from '@/lib/tasksService'
-import { createServerSupabaseWithToken } from '@/lib/supabaseClient'
+import { resolveApiAuth, UnauthorizedError } from '@/lib/apiAuth'
 
 function startOfTodayISO() {
   const d = new Date()
@@ -9,7 +9,7 @@ function startOfTodayISO() {
   return d.toISOString()
 }
 
-function startOfWeekISO(weekStart: 'mon'|'sun') {
+function startOfWeekISO(weekStart: 'mon' | 'sun') {
   const d = new Date()
   const day = d.getDay() // 0: Sun ... 6: Sat
   const diff = weekStart === 'sun' ? 0 : (day + 6) % 7
@@ -29,7 +29,10 @@ function startOfMonthISO() {
   return dl.toISOString()
 }
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
   try {
     if (req.method !== 'GET') {
       res.setHeader('Allow', 'GET')
@@ -37,7 +40,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return
     }
     const range = (req.query.range as string) || 'today'
-    const weekStartParam = (req.query.weekStart as string) === 'sun' ? 'sun' : 'mon'
+    const weekStartParam =
+      (req.query.weekStart as string) === 'sun' ? 'sun' : 'mon'
     const to = new Date()
     const toISO = to.toISOString()
     let fromISO: string
@@ -45,12 +49,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     else if (range === 'month') fromISO = startOfMonthISO()
     else fromISO = startOfTodayISO()
 
-    const authHeader = req.headers.authorization || ''
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : undefined
-    const sb = createServerSupabaseWithToken(token)
-    const summary = await tasksService.getSummary(fromISO, toISO, sb)
+    const auth = await resolveApiAuth(req)
+    const summary = await tasksService.getSummary(fromISO, toISO, auth)
     res.status(200).json({ range, from: fromISO, to: toISO, ...summary })
   } catch (e: any) {
+    if (e instanceof UnauthorizedError) {
+      res.status(401).json({ error: e.message })
+      return
+    }
     res.status(500).json({ error: e?.message || 'internal error' })
   }
 }
